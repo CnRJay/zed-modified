@@ -9969,6 +9969,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "marketplace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "collections",
+ "fs",
+ "futures 0.3.31",
+ "gpui",
+ "http_client",
+ "num-format",
+ "rope",
+ "rpc",
+ "semantic_version",
+ "serde",
+ "serde_json",
+ "strum 0.27.1",
+ "ui",
+ "urlencoding",
+ "util",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20471,6 +20494,7 @@ dependencies = [
  "log",
  "markdown",
  "markdown_preview",
+ "marketplace",
  "menu",
  "migrator",
  "mimalloc",

@@ -1,0 +1,27 @@
+[package]
+name = "marketplace"
+version = "0.1.0"
+publish.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+collections.workspace = true
+fs.workspace = true
+futures.workspace = true
+gpui.workspace = true
+http_client.workspace = true
+rpc.workspace = true
+rope.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+semantic_version.workspace = true
+strum.workspace = true
+ui.workspace = true
+util.workspace = true
+num-format = "0.4"
+urlencoding = "2.1"
+
+[lints]
+workspace = true
