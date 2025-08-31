@@ -636,7 +636,8 @@ pub fn main() {
         settings_ui::init(cx);
         keymap_editor::init(cx);
         extensions_ui::init(cx);
-        marketplace::init();
+        let _ = remote_ssh::init(cx);
+        let _ = remote_ssh_ui::init(cx);
         zeta::init(cx);
         inspector_ui::init(app_state.clone(), cx);
 

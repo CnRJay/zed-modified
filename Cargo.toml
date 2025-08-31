@@ -216,7 +216,7 @@ members = [
     #
 
     "tooling/workspace-hack",
-    "tooling/xtask", "crates/marketplace",
+    "tooling/xtask",
 ]
 default-members = ["crates/zed"]
 
@@ -330,7 +330,8 @@ lmstudio = { path = "crates/lmstudio" }
 lsp = { path = "crates/lsp" }
 markdown = { path = "crates/markdown" }
 markdown_preview = { path = "crates/markdown_preview" }
-marketplace = { path = "crates/marketplace" }
+remote_ssh = { path = "crates/remote_ssh" }
+remote_ssh_ui = { path = "crates/remote_ssh_ui" }
 svg_preview = { path = "crates/svg_preview" }
 media = { path = "crates/media" }
 menu = { path = "crates/menu" }
