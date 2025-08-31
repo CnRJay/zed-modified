@@ -1,0 +1,49 @@
+{
+  "folders": [
+    {
+      "path": ".",
+      "name": "Test Workspace Root"
+    },
+    {
+      "path": "../zed-modified",
+      "name": "Zed Source Code"
+    },
+    {
+      "path": "../example-project",
+      "name": "Example Project"
+    }
+  ],
+  "settings": {
+    "editor": {
+      "fontSize": 16,
+      "tabSize": 4,
+      "formatOnSave": true
+    },
+    "languageSpecific": {
+      "rust": {
+        "formatOnSave": true,
+        "checkOnSave": true
+      }
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "rust-lang.rust",
+      "ms-python.python"
+    ]
+  },
+  "launch": {
+    "type": "node",
+    "name": "Debug Test",
+    "request": "launch",
+    "program": "${workspaceFolder}/test.js"
+  },
+  "tasks": {
+    "label": "Run Tests",
+    "type": "shell",
+    "command": "cargo",
+    "args": ["test"],
+    "cwd": "${workspaceFolder}"
+  },
+  "trust": true
+}

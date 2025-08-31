@@ -15,6 +15,9 @@ pub mod tasks;
 mod theme_preview;
 mod toast_layer;
 mod toolbar;
+pub mod workspace_file;
+pub mod workspace_trust;
+pub mod workspace_ui;
 mod workspace_settings;
 
 pub use crate::notifications::NotificationFrame;
@@ -43,8 +46,8 @@ use gpui::{
     CursorStyle, Decorations, DragMoveEvent, Entity, EntityId, EventEmitter, FocusHandle,
     Focusable, Global, HitboxBehavior, Hsla, KeyContext, Keystroke, ManagedView, MouseButton,
     PathPromptOptions, Point, PromptLevel, Render, ResizeEdge, Size, Stateful, Subscription,
-    SystemWindowTabController, Task, Tiling, WeakEntity, WindowBounds, WindowHandle, WindowId,
-    WindowOptions, actions, canvas, point, relative, size, transparent_black,
+    SystemWindowTabController, Task, Tiling, UpdateGlobal, WeakEntity, WindowBounds, WindowHandle,
+    WindowId, WindowOptions, actions, canvas, point, relative, size, transparent_black,
 };
 pub use history_manager::*;
 pub use item::{
@@ -78,7 +81,7 @@ use remote::{RemoteClientDelegate, RemoteConnectionOptions, remote_client::Conne
 use schemars::JsonSchema;
 use serde::Deserialize;
 use session::AppSession;
-use settings::{Settings, update_settings_file};
+use settings::{Settings, SettingsStore, update_settings_file};
 use shared_screen::SharedScreen;
 use sqlez::{
     bindable::{Bind, Column, StaticColumnCount},
@@ -1146,6 +1149,9 @@ pub struct Workspace {
     _items_serializer: Task<Result<()>>,
     session_id: Option<String>,
     scheduled_tasks: Vec<Task<()>>,
+    workspace_file: Option<workspace_file::WorkspaceFile>,
+    workspace_file_path: Option<PathBuf>,
+    trust_level: workspace_trust::TrustLevel,
 }
 
 impl EventEmitter<Event> for Workspace {}
@@ -1176,6 +1182,19 @@ impl Workspace {
         workspace_id: Option<WorkspaceId>,
         project: Entity<Project>,
         app_state: Arc<AppState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_workspace_file(workspace_id, project, app_state, None, None, workspace_trust::TrustLevel::Unknown, window, cx)
+    }
+
+    pub fn new_with_workspace_file(
+        workspace_id: Option<WorkspaceId>,
+        project: Entity<Project>,
+        app_state: Arc<AppState>,
+        workspace_file: Option<workspace_file::WorkspaceFile>,
+        workspace_file_path: Option<PathBuf>,
+        trust_level: workspace_trust::TrustLevel,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1477,6 +1496,76 @@ impl Workspace {
             session_id: Some(session_id),
 
             scheduled_tasks: Vec::new(),
+            workspace_file,
+            workspace_file_path,
+            trust_level,
+        }
+    }
+
+    /// Get the workspace file if one was loaded
+    pub fn workspace_file(&self) -> Option<&workspace_file::WorkspaceFile> {
+        self.workspace_file.as_ref()
+    }
+
+    /// Get the workspace file path if one was loaded
+    pub fn workspace_file_path(&self) -> Option<&PathBuf> {
+        self.workspace_file_path.as_ref()
+    }
+
+    /// Apply workspace settings to the settings store
+    pub fn apply_workspace_settings(&self, cx: &mut App) {
+        if let Some(workspace_file) = &self.workspace_file {
+            if let Some(_workspace_path) = &self.workspace_file_path {
+                if let Some(settings) = &workspace_file.settings {
+                    // Convert the workspace settings to a JSON value
+                    if let Ok(settings_json) = serde_json::to_value(settings) {
+                        // Collect worktree information first to avoid borrowing conflicts
+                        let worktree_info: Vec<_> = self.project.read(cx).worktrees(cx)
+                            .map(|worktree| {
+                                let worktree_id = worktree.read(cx).id();
+                                let root_path = worktree.read(cx).abs_path();
+                                (worktree_id, root_path)
+                            })
+                            .collect();
+
+                        // Apply settings for each worktree root
+                        for (worktree_id, root_path) in worktree_info {
+                            SettingsStore::update_global(cx, |store, _cx| {
+                                store.set_workspace_settings(worktree_id, root_path, Some(&settings_json));
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if workspace functionality should be restricted based on trust level
+    pub fn should_restrict_functionality(&self) -> bool {
+        workspace_trust::WorkspaceTrust::should_restrict_functionality(self.trust_level)
+    }
+
+    /// Get the workspace trust level
+    pub fn trust_level(&self) -> workspace_trust::TrustLevel {
+        self.trust_level
+    }
+
+    /// Get display names for worktrees, using workspace folder names if available
+    pub fn worktree_display_names(&self, cx: &App) -> Vec<String> {
+        if let Some(workspace_file) = &self.workspace_file {
+            workspace_file.folder_display_names()
+        } else {
+            // Fall back to default worktree names
+            self.project
+                .read(cx)
+                .worktrees(cx)
+                .map(|worktree| {
+                    worktree
+                        .read(cx)
+                        .root_name()
+                        .to_string()
+                })
+                .collect()
         }
     }
 
@@ -1509,6 +1598,41 @@ impl Workspace {
                     paths_to_open.push(canonical)
                 } else {
                     paths_to_open.push(path)
+                }
+            }
+
+            let mut workspace_file_path = None;
+            for path in &paths_to_open {
+                let workspace_path = path.join(".zed").join("workspace.json");
+                if app_state.fs.is_file(&workspace_path).await {
+                    workspace_file_path = Some(workspace_path);
+                    break;
+                }
+            }
+
+            let mut loaded_workspace_file = None;
+            let mut loaded_workspace_path = None;
+            let mut trust_level = workspace_trust::TrustLevel::Unknown;
+
+            if let Some(workspace_path) = workspace_file_path {
+                match workspace_file::WorkspaceFile::load(&workspace_path) {
+                    Ok(workspace_file) => {
+                        paths_to_open = workspace_file.resolved_folder_paths(&workspace_path);
+
+                        // Check workspace trust
+                        if workspace_trust::WorkspaceTrust::should_auto_trust(&workspace_file, &workspace_path) {
+                            trust_level = workspace_trust::TrustLevel::Trusted;
+                        } else {
+                            trust_level = workspace_trust::TrustLevel::Unknown;
+                        }
+
+                        loaded_workspace_file = Some(workspace_file);
+                        loaded_workspace_path = Some(workspace_path.clone());
+                        log::info!("Loaded workspace file: {}", workspace_path.display());
+                    }
+                    Err(err) => {
+                        log::warn!("Failed to load workspace file {}: {}", workspace_path.display(), err);
+                    }
                 }
             }
 
@@ -1570,17 +1694,45 @@ impl Workspace {
                     .map(|w| w.centered_layout)
                     .unwrap_or(false);
 
+                let workspace_file_for_window = loaded_workspace_file.clone();
+                let workspace_path_for_window = loaded_workspace_path.clone();
                 cx.update_window(window.into(), |_, window, cx| {
                     window.replace_root(cx, |window, cx| {
-                        let mut workspace = Workspace::new(
+                        let mut workspace = Workspace::new_with_workspace_file(
                             Some(workspace_id),
                             project_handle.clone(),
                             app_state.clone(),
+                            workspace_file_for_window.clone(),
+                            workspace_path_for_window.clone(),
+                            trust_level,
                             window,
                             cx,
                         );
 
                         workspace.centered_layout = centered_layout;
+
+                        // Apply workspace settings if available
+                        if workspace_file_for_window.is_some() {
+                            workspace.apply_workspace_settings(cx);
+                        }
+
+                        // Handle workspace trust
+                        if trust_level == workspace_trust::TrustLevel::Unknown {
+                            if let Some(workspace_path) = &workspace_path_for_window {
+                                let workspace_name = workspace_file_for_window
+                                    .as_ref()
+                                    .and_then(|wf| wf.folders.first())
+                                    .and_then(|f| f.name.clone())
+                                    .unwrap_or_else(|| "Unknown Workspace".to_string());
+
+                                let _ = workspace_trust::WorkspaceTrustPrompt::show(
+                                    workspace_path.clone(),
+                                    workspace_name.into(),
+                                    cx,
+                                );
+                            }
+                        }
+
                         workspace
                     });
                 })?;
@@ -1613,19 +1765,47 @@ impl Workspace {
                     .as_ref()
                     .map(|w| w.centered_layout)
                     .unwrap_or(false);
+                let workspace_file_for_window = loaded_workspace_file.clone();
+                let workspace_path_for_window = loaded_workspace_path.clone();
                 cx.open_window(options, {
                     let app_state = app_state.clone();
                     let project_handle = project_handle.clone();
                     move |window, cx| {
                         cx.new(|cx| {
-                            let mut workspace = Workspace::new(
+                            let mut workspace = Workspace::new_with_workspace_file(
                                 Some(workspace_id),
                                 project_handle,
                                 app_state,
+                                workspace_file_for_window.clone(),
+                                workspace_path_for_window.clone(),
+                                trust_level,
                                 window,
                                 cx,
                             );
                             workspace.centered_layout = centered_layout;
+
+                            // Apply workspace settings if available
+                            if workspace_file_for_window.is_some() {
+                                workspace.apply_workspace_settings(cx);
+                            }
+
+                            // Handle workspace trust
+                            if trust_level == workspace_trust::TrustLevel::Unknown {
+                                if let Some(workspace_path) = &workspace_path_for_window {
+                                    let workspace_name = workspace_file_for_window
+                                        .as_ref()
+                                        .and_then(|wf| wf.folders.first())
+                                        .and_then(|f| f.name.clone())
+                                        .unwrap_or_else(|| "Unknown Workspace".to_string());
+
+                                    let _ = workspace_trust::WorkspaceTrustPrompt::show(
+                                        workspace_path.clone(),
+                                        workspace_name.into(),
+                                        cx,
+                                    );
+                                }
+                            }
+
                             workspace
                         })
                     }
@@ -10669,4 +10849,68 @@ mod tests {
         });
         item
     }
+
+    #[test]
+    fn test_workspace_file_loading() {
+        let workspace_path = PathBuf::from("../../test-workspace/.zed/workspace.json");
+        match workspace_file::WorkspaceFile::load(&workspace_path) {
+            Ok(workspace_file) => {
+                assert_eq!(workspace_file.folders.len(), 3);
+
+                // Check folder names
+                assert_eq!(workspace_file.folders[0].name.as_deref(), Some("Test Workspace Root"));
+                assert_eq!(workspace_file.folders[1].name.as_deref(), Some("Zed Source Code"));
+                assert_eq!(workspace_file.folders[2].name.as_deref(), Some("Example Project"));
+
+                // Check trust setting
+                assert_eq!(workspace_file.trust, Some(true));
+
+                // Check display names
+                let display_names = workspace_file.folder_display_names();
+                assert_eq!(display_names.len(), 3);
+                assert_eq!(display_names[0], "Test Workspace Root");
+                assert_eq!(display_names[1], "Zed Source Code");
+                assert_eq!(display_names[2], "Example Project");
+
+                println!("✅ Workspace file loading test passed!");
+            }
+            Err(err) => {
+                panic!("Failed to load workspace file: {}", err);
+            }
+        }
+    }
+
+    #[test]
+    fn test_trust_system() {
+        let workspace_path = PathBuf::from("../../test-workspace/.zed/workspace.json");
+
+        match workspace_file::WorkspaceFile::load(&workspace_path) {
+            Ok(workspace_file) => {
+                // Test auto-trust for explicitly trusted workspace
+                let should_trust = workspace_trust::WorkspaceTrust::should_auto_trust(
+                    &workspace_file,
+                    &workspace_path
+                );
+                assert!(should_trust);
+
+                // Test trust level determination
+                let trust_level = workspace_trust::WorkspaceTrust::should_restrict_functionality(
+                    workspace_trust::TrustLevel::Trusted
+                );
+                assert!(!trust_level);
+
+                let trust_level = workspace_trust::WorkspaceTrust::should_restrict_functionality(
+                    workspace_trust::TrustLevel::Untrusted
+                );
+                assert!(trust_level);
+
+                println!("✅ Trust system test passed!");
+            }
+            Err(err) => {
+                panic!("Failed to load workspace file: {}", err);
+            }
+        }
+    }
 }
+
+

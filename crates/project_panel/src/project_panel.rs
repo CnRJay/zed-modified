@@ -107,6 +107,7 @@ pub struct ProjectPanel {
     clipboard: Option<ClipboardEntry>,
     _dragged_entry_destination: Option<Arc<Path>>,
     workspace: WeakEntity<Workspace>,
+    worktree_display_names: HashMap<WorktreeId, String>,
     width: Option<Pixels>,
     pending_serialization: Task<Option<()>>,
     show_scrollbar: bool,
@@ -617,6 +618,7 @@ impl ProjectPanel {
                 clipboard: None,
                 _dragged_entry_destination: None,
                 workspace: workspace.weak_handle(),
+                worktree_display_names: Default::default(),
                 width: None,
                 pending_serialization: Task::ready(None),
                 show_scrollbar: !Self::should_autohide_scrollbar(cx),
@@ -3519,13 +3521,13 @@ impl ProjectPanel {
                 let settings = ProjectPanelSettings::get_global(cx);
                 settings.git_status
             };
-            if let Some(worktree) = self
+            if let Some(_worktree) = self
                 .project
                 .read(cx)
                 .worktree_for_id(visible.worktree_id, cx)
             {
-                let snapshot = worktree.read(cx).snapshot();
-                let root_name = OsStr::new(snapshot.root_name());
+                let display_name = self.worktree_display_name(visible.worktree_id, cx);
+                let root_name = OsStr::new(&display_name);
 
                 let entry_range = range.start.saturating_sub(ix)..end_ix - ix;
                 let entries = visible
@@ -5034,7 +5036,8 @@ impl ProjectPanel {
 
         let panel_settings = ProjectPanelSettings::get_global(cx);
         let git_status_enabled = panel_settings.git_status;
-        let root_name = OsStr::new(worktree.root_name());
+        let display_name = self.worktree_display_name(worktree_id, cx);
+        let root_name = OsStr::new(&display_name);
 
         let git_summaries_by_id = if git_status_enabled {
             visible
@@ -5111,6 +5114,38 @@ fn item_width_estimate(depth: usize, item_text_chars: usize, is_symlink: bool) -
         item_width += ICON_SIZE_FACTOR;
     }
     item_width
+}
+
+impl ProjectPanel {
+    /// Get the display name for a worktree
+    pub fn worktree_display_name(&self, worktree_id: WorktreeId, cx: &mut Context<Self>) -> String {
+        // First try to get from our cached map
+        if let Some(name) = self.worktree_display_names.get(&worktree_id) {
+            return name.clone();
+        }
+
+        // If not cached, compute it
+        if let Some(workspace) = self.workspace.upgrade() {
+            let display_names = workspace.read(cx).worktree_display_names(cx);
+            let worktrees = self.project.read(cx).worktrees(cx);
+
+            for (index, worktree) in worktrees.enumerate() {
+                if worktree.read(cx).id() == worktree_id {
+                    return display_names
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| worktree.read(cx).root_name().to_string());
+                }
+            }
+        }
+
+        // Fallback to worktree root name if workspace is not available
+        if let Some(worktree) = self.project.read(cx).worktree_for_id(worktree_id, cx) {
+            worktree.read(cx).root_name().to_string()
+        } else {
+            "Unknown".to_string()
+        }
+    }
 }
 
 impl Render for ProjectPanel {

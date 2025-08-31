@@ -211,6 +211,7 @@ pub struct SettingsStore {
     raw_server_settings: Option<Value>,
     raw_extension_settings: Value,
     raw_local_settings: BTreeMap<(WorktreeId, Arc<Path>), Value>,
+    raw_workspace_settings: BTreeMap<(WorktreeId, Arc<Path>), Value>,
     raw_editorconfig_settings: BTreeMap<(WorktreeId, Arc<Path>), (String, Option<Editorconfig>)>,
     tab_size_callback: Option<(
         TypeId,
@@ -301,6 +302,7 @@ impl SettingsStore {
             raw_server_settings: None,
             raw_extension_settings: json!({}),
             raw_local_settings: Default::default(),
+            raw_workspace_settings: Default::default(),
             raw_editorconfig_settings: BTreeMap::default(),
             tab_size_callback: Default::default(),
             setting_file_updates_tx,
@@ -827,6 +829,21 @@ impl SettingsStore {
         Ok(())
     }
 
+    /// Add or remove workspace settings for a specific worktree root.
+    pub fn set_workspace_settings(
+        &mut self,
+        root_id: WorktreeId,
+        directory_path: Arc<Path>,
+        settings: Option<&serde_json::Value>,
+    ) {
+        let key = (root_id, directory_path);
+        if let Some(settings) = settings {
+            self.raw_workspace_settings.insert(key, settings.clone());
+        } else {
+            self.raw_workspace_settings.remove(&key);
+        }
+    }
+
     /// Add or remove a set of local settings via a JSON string.
     pub fn set_local_settings(
         &mut self,
@@ -1260,7 +1277,7 @@ impl SettingsStore {
                 setting_value.set_global_value(value);
             }
 
-            // Reload the local values for the setting.
+            // Reload the local and workspace values for the setting.
             paths_stack.clear();
             project_settings_stack.clear();
             for ((root_id, directory_path), local_settings) in &self.raw_local_settings {
@@ -1317,6 +1334,51 @@ impl SettingsStore {
                             path: directory_path.join(local_settings_file_relative_path()),
                             message: error.to_string(),
                         });
+                    }
+                }
+            }
+
+            // Process workspace settings (these override local settings)
+            for ((root_id, directory_path), workspace_settings) in &self.raw_workspace_settings {
+                // Build a stack of all of the workspace values for that setting.
+                while let Some(prev_entry) = paths_stack.last() {
+                    if let Some((prev_root_id, prev_path)) = prev_entry
+                        && (root_id != prev_root_id || !directory_path.starts_with(prev_path))
+                    {
+                        paths_stack.pop();
+                        project_settings_stack.pop();
+                        continue;
+                    }
+                    break;
+                }
+
+                match setting_value.deserialize_setting(workspace_settings) {
+                    Ok(workspace_settings) => {
+                        paths_stack.push(Some((*root_id, directory_path.as_ref())));
+                        project_settings_stack.push(workspace_settings);
+
+                        if let Some(value) = setting_value
+                            .load_setting(
+                                SettingsSources {
+                                    default: &default_settings,
+                                    global: global_settings.as_ref(),
+                                    extensions: extension_settings.as_ref(),
+                                    user: user_settings.as_ref(),
+                                    release_channel: release_channel_settings.as_ref(),
+                                    operating_system: os_settings.as_ref(),
+                                    profile: profile_settings.as_ref(),
+                                    server: server_settings.as_ref(),
+                                    project: &project_settings_stack.iter().collect::<Vec<_>>(),
+                                },
+                                cx,
+                            )
+                            .log_err()
+                        {
+                            setting_value.set_local_value(*root_id, directory_path.clone(), value);
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("Failed to parse workspace settings: {}", error);
                     }
                 }
             }

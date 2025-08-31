@@ -1,0 +1,45 @@
+{
+  "folders": [
+    {
+      "path": ".",
+      "name": "Zed Source Code"
+    },
+    {
+      "path": "../example-project",
+      "name": "Example Project"
+    }
+  ],
+  "settings": {
+    "editor": {
+      "fontSize": 14,
+      "tabSize": 2,
+      "formatOnSave": true
+    },
+    "languageSpecific": {
+      "rust": {
+        "formatOnSave": true,
+        "checkOnSave": true
+      }
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "rust-lang.rust",
+      "ms-python.python"
+    ]
+  },
+  "launch": {
+    "type": "node",
+    "name": "Debug Zed",
+    "request": "launch",
+    "program": "${workspaceFolder}/target/debug/zed"
+  },
+  "tasks": {
+    "label": "Build Zed",
+    "type": "shell",
+    "command": "cargo",
+    "args": ["build", "--release"],
+    "cwd": "${workspaceFolder}"
+  },
+  "trust": true
+}
